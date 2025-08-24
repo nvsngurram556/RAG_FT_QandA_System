@@ -4,3 +4,6 @@ huggingface-hub
 transformers
 sentence-transformers
 faiss-cpu
+evaluate
+torch
+pandas
