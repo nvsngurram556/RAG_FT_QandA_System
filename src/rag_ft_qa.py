@@ -222,28 +222,37 @@ def model_creation():
     return llm, tokenizer, model, generator
 
 def generate_response(llm, query, top_docs, start_rag, max_tokens=1500):
-    # Concatenate passages up to max_tokens limit (approximate by character length)
+    """
+    Generate a response using either RAG (list of docs) or fine-tuned model (string/simple context).
+    Handles both cases for top_docs.
+    """
     results = []
-    max_context_length = 1500  # Approximate max characters to keep within model context
+    max_context_length = 1500
     concatenated_passages = ""
-    for doc in top_docs[:2]:
-        content = doc.page_content if hasattr(doc, 'page_content') else str(doc)
-        if len(concatenated_passages) + len(content) + 1 > max_context_length:
-            break
-        concatenated_passages += content + "\n"
+    if isinstance(top_docs, list):
+        for doc in top_docs[:2]:
+            content = doc.page_content if hasattr(doc, 'page_content') else str(doc)
+            if len(concatenated_passages) + len(content) + 1 > max_context_length:
+                break
+            concatenated_passages += content + "\n"
+    elif isinstance(top_docs, str):
+        concatenated_passages = top_docs[:max_context_length]
+    else:
+        concatenated_passages = str(top_docs)[:max_context_length]
 
     prompt = f"Answer the question using the context.\nContext: {concatenated_passages}\nQuestion: {query}\nAnswer:"
     try:
-        response = llm.invoke(prompt)
+        response = llm.invoke(prompt) if hasattr(llm, "invoke") else llm(prompt)
     except Exception as e:
-        print(f"Error: {e}. Please pull the model using 'ollama pull llama2:7b' and try again.")
+        print(f"Error generating response: {e}")
         response = ""
+
     rag_time = time.time() - start_rag
-    rag_confidence = get_confidence_rag(top_docs)
+    rag_confidence = 1.0  # Default for non-RAG or if scores not available
     rag_correct = correctness(response, query.get("answer", "")) if isinstance(query, dict) and "answer" in query else ""
     results.append({
         "Question": query if isinstance(query, str) else query.get("question", ""),
-        "Method": "RAG",
+        "Method": "RAG/Fine-Tuned",
         "Answer": response,
         "Confidence": round(rag_confidence, 2),
         "Time (s)": round(rag_time, 2),
@@ -435,10 +444,21 @@ def load_finetuned_model(dataset):
         model = AutoModelForCausalLM.from_pretrained("./sft_model")
         generator = pipeline("text-generation", model=model, tokenizer=tokenizer)
         fine_tuned_results = evaluate_model(
-        generator,
-        [{"question": sample["question"]} for sample in dataset['train'][:10]]
+            generator,
+            [{"question": sample["question"]} for sample in dataset['train'][:10]]
         )
-        filtered_fine_tuned_results = response_val(fine_tuned_results[0]["answer"], max_length=150)
+        # New block as per instructions:
+        first_answer = ""
+        if fine_tuned_results:
+            if isinstance(fine_tuned_results[0], dict):
+                first_answer = fine_tuned_results[0].get("answer", "")
+            else:
+                first_answer = str(fine_tuned_results[0])
+        try:
+            filtered_fine_tuned_results = response_val(first_answer, max_length=150)
+        except Exception as e:
+            logging.error(f"Error processing fine-tuned results: {e}")
+            filtered_fine_tuned_results = "Error processing fine-tuned output."
         print("\nfiltered_fine_tuned_results:\n", filtered_fine_tuned_results)
         return generator
     except Exception as e:
@@ -824,11 +844,9 @@ if __name__ == "__main__":
         start_time = time.time()
         if mode == "RAG":
             start_rag = time.time()
-            reranked_results = rerank_with_cross_encoder(query, retrieved_docs, top_k=2)
-            print(f"\n--- Top Chunks after Reranking: {len(reranked_results)} ---\n")
             print("\n--- Generating Response... ---\n")
-            rag_answer = generate_response(llm, query, reranked_results, start_rag)
-            rag_confidence = get_confidence_rag(reranked_results)
+            rag_answer = generate_response(llm, query, retrieved_docs, start_rag)
+            rag_confidence = get_confidence_rag(retrieved_docs)
             print("\n--- Validating Query and Response(Guardrail implementation)... ---\n")
             validation_passed, validation_issues = validate_response(rag_answer)
             rag_correct = correctness(rag_answer, query)
@@ -836,23 +854,18 @@ if __name__ == "__main__":
                 st.warning("Response validation issues detected:")
                 for issue in validation_issues:
                     st.write(f" - {issue}")
-            confidence_score = sum([res.metadata.get('similarity', 0) for res in reranked_results]) / len(reranked_results) if reranked_results else 0
-            df = pd.DataFrame(rag_results)
-            print(df.to_string(index=False))
+            elapsed_time = time.time() - start_rag
         else:
             fine_tuned_results = []
-            print("\n--- Fine-Tuned Model with Q&A training completed and saved to ./sft_model ---\n")
             start_ft = time.time()
-            fine_tuned_generator = load_finetuned_model(dataset)
             print("\n--- Generating Response from Fine-Tuned Model... ---\n")
-            ex_response = expert_model_fine_tune(dataset, model, tokenizer, query)
-            if fine_tuned_generator:
-                answer = generate_response(fine_tuned_generator, query, ex_response, start_ft, max_tokens=1500)
+            answer = generate_response(fine_tuned_generator, query, ex_response, start_ft, max_tokens=1500)
+            if answer:
                 st.write(f"Generated Answer:\n{answer}\n")
                 confidence_score = 1.0  # Placeholder confidence
             else:
                 answer = "Error loading fine-tuned model."
-
+            elapsed_time = time.time() - start_ft
         if answer:
             st.success(f"Answer: {answer}")
             st.write(f"Confidence Score: {confidence_score:.2f}")
