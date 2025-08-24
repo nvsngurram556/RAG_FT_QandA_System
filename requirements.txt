@@ -1,14 +1,14 @@
 streamlit
-langchain>=0.2.0
+langchain
 huggingface-hub
 transformers
 sentence-transformers
 faiss-cpu
-evaluate==0.4.0
+evaluate
 torch
 pandas
 langchain-community
 nltk
 logging
 pyarrow
-datasets==2.14.4
+datasets
