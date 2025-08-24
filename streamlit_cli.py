@@ -1,20 +1,15 @@
 import streamlit as st
 import time
-from langchain.llms import Ollama
 from transformers import pipeline, AutoTokenizer, AutoModelForCausalLM
 from src.rag_ft_qa import generate_response, retrieve_documents
 
-@st.cache_resource
-def load_llm():
-    return Ollama(model="llama2:7b")
 
 @st.cache_resource
 def load_fine_tuned_generator():
     tokenizer = AutoTokenizer.from_pretrained("./sft_model")
     model = AutoModelForCausalLM.from_pretrained("./sft_model")
     return pipeline("text-generation", model=model, tokenizer=tokenizer)
-
-llm = load_llm()
+llm = pipeline("text-generation", model="gpt2")
 fine_tuned_generator = load_fine_tuned_generator()
 
 st.title("RAG & Fine-Tuned Q&A System")
