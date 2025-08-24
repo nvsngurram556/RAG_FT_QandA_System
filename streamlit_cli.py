@@ -26,7 +26,21 @@ if st.button("Get Answer") and query:
     else:
         st.info("Using Fine-Tuned model to generate the response...")
         start_time = time.time()
-        response = generate_response(fine_tuned_generator, query, "", start_time)
+        prompt = f"Q: {query}\nA:"
+        output = fine_tuned_generator(
+            prompt,
+            max_length=256,
+            min_new_tokens=20,
+            do_sample=True,
+            temperature=0.7,
+            top_p=0.9,
+            repetition_penalty=1.2
+        )
+        generated = output[0]['generated_text']
+        if len(generated) > len(prompt):
+            response = generated[len(prompt):].strip()
+        else:
+            response = generated.strip()
 
     st.subheader("Answer:")
     st.write(response)
