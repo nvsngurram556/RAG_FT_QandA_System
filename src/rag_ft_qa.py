@@ -834,12 +834,12 @@ if __name__ == "__main__":
     pre_train_model(model, tokenizer, test_samples)
     print("\n --- Pre-Fine-Tune Model Implementation Completed ---\n")
     print("\n --- Fine-Tuning Model Training Started ---\n")
-    #QandA_model_train(tokenizer, model, dataset)
-    #fine_tuned_generator = load_finetuned_model(dataset)
-    #print("\n--- Generating Response from Fine-Tuned Model... ---\n")
-    ex_response = expert_model_fine_tune(test_samples, model, tokenizer, sample_query)
-    if ex_response:
-        answer = generate_response(ex_response, sample_query, ex_response, start_ft, max_tokens=1500)
+    QandA_model_train(tokenizer, model, dataset)
+    fine_tuned_generator = load_finetuned_model(dataset)
+    print("\n--- Generating Response from Fine-Tuned Model... ---\n")
+    ex_response = expert_model_fine_tune(dataset, model, tokenizer, sample_query)
+    if fine_tuned_generator:
+        answer = generate_response(fine_tuned_generator, sample_query, ex_response, start_ft, max_tokens=1500)
         print(f"Generated Answer:\n{answer}\n")
     else:
         answer = "Error loading fine-tuned model."
