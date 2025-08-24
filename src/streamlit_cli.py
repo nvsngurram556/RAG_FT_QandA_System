@@ -2,7 +2,7 @@ import streamlit as st
 import time
 from langchain.llms import Ollama
 from transformers import pipeline, AutoTokenizer, AutoModelForCausalLM
-from rag_ft_qa import generate_response, retrieve_documents
+from src.rag_ft_qa import generate_response, retrieve_documents
 
 @st.cache_resource
 def load_llm():
