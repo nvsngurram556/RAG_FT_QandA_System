@@ -9,7 +9,7 @@ def load_fine_tuned_generator():
     tokenizer = AutoTokenizer.from_pretrained("./sft_model")
     model = AutoModelForCausalLM.from_pretrained("./sft_model")
     return pipeline("text-generation", model=model, tokenizer=tokenizer)
-llm = pipeline("text-generation", model="gpt2")
+llm = pipeline("text-generation", model="gpt2", device=-1)
 fine_tuned_generator = load_fine_tuned_generator()
 
 st.title("RAG & Fine-Tuned Q&A System")
