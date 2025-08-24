@@ -307,7 +307,17 @@ def generate_response(llm, query, top_docs, start_rag, max_tokens=1500):
 
     prompt = f"Answer the question using the context.\nContext: {concatenated_passages}\nQuestion: {query}\nAnswer:"
     try:
-        response = llm.invoke(prompt) if hasattr(llm, "invoke") else llm(prompt)
+        if hasattr(llm, "invoke"):  # For LangChain/Ollama
+            response = llm.invoke(prompt)
+        else:  # For HuggingFace pipeline
+            output = llm(prompt, max_length=max_tokens, num_return_sequences=1)
+            if isinstance(output, list) and "generated_text" in output[0]:
+                response = output[0]["generated_text"]
+                # Remove the prompt text if included
+                if "Answer:" in response:
+                    response = response.split("Answer:")[-1].strip()
+            else:
+                response = str(output)
     except Exception as e:
         print(f"Error generating response: {e}")
         response = ""
