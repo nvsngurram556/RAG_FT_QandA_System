@@ -10,5 +10,5 @@ pandas
 langchain-community
 nltk
 logging
-pyarrow<13.0.0
+pyarrow
 datasets==2.14.4
