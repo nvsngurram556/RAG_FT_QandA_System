@@ -3,17 +3,50 @@ import re, nltk, sys, os,logging, streamlit as st, time, json, evaluate, torch, 
 from collections import Counter
 from langchain.text_splitter import CharacterTextSplitter
 from langchain_huggingface import HuggingFaceEmbeddings  # Requires: pip install langchain-huggingface
-from langchain_community.vectorstores import FAISS
-from langchain_community.retrievers import BM25Retriever
+from langchain.vectorstores import FAISS
+from langchain.retrievers import BM25Retriever
 from langchain_community.llms import HuggingFacePipeline
 from nltk.corpus import stopwords
 from datasets import load_dataset
 from transformers import AutoTokenizer, AutoModelForCausalLM, AutoModelForQuestionAnswering, AutoModelForSeq2SeqLM, DataCollatorForSeq2Seq, Trainer, TrainingArguments, pipeline
-from sentence_transformers import CrossEncoder
 nltk.download('stopwords')
 stop_words = set(stopwords.words('english'))
+from transformers import AutoTokenizer, AutoModelForCausalLM
+
+
+# --- FAISS and BM25 Initialization (Hybrid Retrieval Setup) ---
+import os
+
+# Ensure chunks_400 is defined globally, or provide fallback.
+try:
+    chunks_400
+except NameError:
+    chunks_400 = []
+    print("Warning: chunks_400 not found at import time, using empty list for FAISS index.")
+
+embedding_model = HuggingFaceEmbeddings(model_name="sentence-transformers/all-MiniLM-L6-v2")
+
+faiss_index_path = "data/processed/faiss_index"
+if os.path.exists(faiss_index_path):
+    faiss_store = FAISS.load_local(faiss_index_path, embedding_model, allow_dangerous_deserialization=True)
+else:
+    print("FAISS index not found. Creating a new one from dataset chunks...")
+    try:
+        # Use processed dataset chunks if available
+        from rag_ft_qa import chunks_400  # ensure chunks_400 exists globally
+        docs = chunks_400
+    except ImportError:
+        docs = []
+        print("Warning: chunks_400 not found, using empty list for docs.")
+    faiss_store = FAISS.from_documents(docs, embedding_model)
+    faiss_store.save_local(faiss_index_path)
+
+bm25_retriever = BM25Retriever.from_documents(faiss_store.docstore._dict.values())
+
+# Initialize GPT-2 tokenizer and model for scoring
+gpt2_tokenizer = AutoTokenizer.from_pretrained("gpt2")
+gpt2_model = AutoModelForCausalLM.from_pretrained("gpt2")
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-cross_encoder = CrossEncoder('cross-encoder/ms-marco-MiniLM-L-6-v2')
 
 
 # 1. Data Collection & Preprocessing
@@ -186,16 +219,48 @@ def hybrid_retrieve(query, faiss_store, bm25_retriever, top_n=5):
 
 
 # 2.4 Advanced RAG Technique :
-# Re-Ranking with Cross-Encoders : Use a cross-encoder to re-rank top retrieved chunks based on query relevance.
+# Re-Ranking with GPT-2 negative log-likelihood scoring
+from concurrent.futures import ThreadPoolExecutor
+
+gpt2_score_cache = {}
+
+def gpt2_score(query, doc):
+    """
+    Compute a GPT-2-based score for a (query, doc) pair.
+    Uses caching and can be called in parallel.
+    """
+    key = (query, doc)
+    if key in gpt2_score_cache:
+        return gpt2_score_cache[key]
+    input_text = f"Question: {query}\nAnswer: {doc}"
+    inputs = gpt2_tokenizer(input_text, return_tensors="pt")
+    with torch.no_grad():
+        outputs = gpt2_model(**inputs, labels=inputs["input_ids"])
+    loss = outputs.loss.item()
+    score = -loss
+    gpt2_score_cache[key] = score
+    return score
+
+def parallel_gpt2_score(pairs, max_workers=4):
+    """
+    Compute GPT-2 scores for a list of (query, doc) pairs in parallel.
+    """
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        scores = list(executor.map(lambda x: gpt2_score(x[0], x[1]), pairs))
+    return scores
+
 def rerank_with_cross_encoder(query, retrieved_docs, top_k=5):
+    """
+    Rerank retrieved_docs using GPT-2 scoring, in parallel.
+    """
     pairs = []
     for doc in retrieved_docs:
         content = doc.page_content if hasattr(doc, 'page_content') else str(doc)
         pairs.append((query, content))
-    scores = cross_encoder.predict(pairs)
-    doc_score_pairs = list(zip(scores, retrieved_docs))
-    doc_score_pairs.sort(key=lambda x: x[0], reverse=True)
-    top_docs = [doc for score, doc in doc_score_pairs[:top_k]]
+    scores = parallel_gpt2_score(pairs)
+    scored_docs = list(zip(scores, retrieved_docs))
+    scored_docs.sort(key=lambda x: x[0], reverse=True)
+    top_docs = [doc for score, doc in scored_docs[:top_k]]
     return top_docs
 
 # 2.5 Response Generation
@@ -632,7 +697,12 @@ def display_results_table(results: List[Dict]):
         print(f"{r['question'][:q_width]:{q_width}} | {r['method']:{m_width}} | {answer:{a_width}} | {str(r['confidence']):{c_width}} | {str(r['time']):{t_width}} | {r['correct']:{correct_width}}")
     print("=" * len(header))
 
-
+#CLI Interface and Execution
+#----------------------------------------------------------
+def retrieve_documents(query, top_k=5):
+    faiss_docs = faiss_store.similarity_search(query, k=top_k)
+    bm25_docs = bm25_retriever.get_relevant_documents(query)
+    return faiss_docs + bm25_docs
 
 if __name__ == "__main__":
     print("RAG and Fine-Tuning Q & A System Started")
@@ -835,39 +905,4 @@ if __name__ == "__main__":
     print("Evaluating both RAG and Fine-Tuned Q&A systems on test questions...\n")
     eval_results = evaluate_systems(llm, fine_tuned_generator, faiss_store, bm25_retriever, test_questions)
     display_results_table(eval_results)
-
-    st.title("Financial Document Q&A for RAG and Fine-Tuned Models")
-    mode = st.radio("Select Mode", ["RAG", "Fine-Tuned"])
-    query = st.text_input("Enter your question")
-    if query:
-        rag_results = []
-        start_time = time.time()
-        if mode == "RAG":
-            start_rag = time.time()
-            print("\n--- Generating Response... ---\n")
-            rag_answer = generate_response(llm, query, retrieved_docs, start_rag)
-            rag_confidence = get_confidence_rag(retrieved_docs)
-            print("\n--- Validating Query and Response(Guardrail implementation)... ---\n")
-            validation_passed, validation_issues = validate_response(rag_answer)
-            rag_correct = correctness(rag_answer, query)
-            if not validation_passed:
-                st.warning("Response validation issues detected:")
-                for issue in validation_issues:
-                    st.write(f" - {issue}")
-            elapsed_time = time.time() - start_rag
-        else:
-            fine_tuned_results = []
-            start_ft = time.time()
-            print("\n--- Generating Response from Fine-Tuned Model... ---\n")
-            answer = generate_response(fine_tuned_generator, query, ex_response, start_ft, max_tokens=1500)
-            if answer:
-                st.write(f"Generated Answer:\n{answer}\n")
-                confidence_score = 1.0  # Placeholder confidence
-            else:
-                answer = "Error loading fine-tuned model."
-            elapsed_time = time.time() - start_ft
-        if answer:
-            st.success(f"Answer: {answer}")
-            st.write(f"Confidence Score: {confidence_score:.2f}")
-            st.write(f"Method Used: {mode}")
-            st.write(f"Response Time: {elapsed_time:.2f} seconds")
+    
