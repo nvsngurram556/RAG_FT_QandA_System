@@ -4,11 +4,11 @@ huggingface-hub
 transformers
 sentence-transformers
 faiss-cpu
-evaluate
+evaluate=0.4.0
 torch
 pandas
 langchain-community
 nltk
 logging
-pyarrow
-datasets
+pyarrow=20.0.0
+datasets=2.14.4
