@@ -7,3 +7,11 @@ faiss-cpu
 evaluate
 torch
 pandas
+langchain-community
+json
+nltk
+logging
+time
+os
+sys
+re
