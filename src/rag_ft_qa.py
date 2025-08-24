@@ -193,7 +193,9 @@ def rerank_with_cross_encoder(query, retrieved_docs, top_k=5):
         content = doc.page_content if hasattr(doc, 'page_content') else str(doc)
         pairs.append((query, content))
     scores = cross_encoder.predict(pairs)
-    top_docs = [doc for score, doc in scores[:top_k]]
+    doc_score_pairs = list(zip(scores, retrieved_docs))
+    doc_score_pairs.sort(key=lambda x: x[0], reverse=True)
+    top_docs = [doc for score, doc in doc_score_pairs[:top_k]]
     return top_docs
 
 # 2.5 Response Generation
@@ -672,7 +674,7 @@ if __name__ == "__main__":
     print("\n --- RAG Response Generation Completed ---\n")
     start_ft = time.time()
     print("\n --- Fine-Tuning Implementation ---\n")
-    convert_txt_to_json("data/QandA.txt", "data/processed/QandA.json")
+    convert_txt_to_json("data/raw/QandA.txt", "data/processed/QandA.json")
     dataset = load_dataset("json", data_files={"train": "data/processed/QandA.json"})
     #print(f"Number of Q/A pairs in dataset: {len(dataset)}")
     print("\n --- Dataset Loaded Successfully ---\n")
@@ -813,3 +815,46 @@ if __name__ == "__main__":
     print("Evaluating both RAG and Fine-Tuned Q&A systems on test questions...\n")
     eval_results = evaluate_systems(llm, fine_tuned_generator, faiss_store, bm25_retriever, test_questions)
     display_results_table(eval_results)
+
+    st.title("Financial Document Q&A for RAG and Fine-Tuned Models")
+    mode = st.radio("Select Mode", ["RAG", "Fine-Tuned"])
+    query = st.text_input("Enter your question")
+    if query:
+        rag_results = []
+        start_time = time.time()
+        if mode == "RAG":
+            start_rag = time.time()
+            reranked_results = rerank_with_cross_encoder(query, retrieved_docs, top_k=2)
+            print(f"\n--- Top Chunks after Reranking: {len(reranked_results)} ---\n")
+            print("\n--- Generating Response... ---\n")
+            rag_answer = generate_response(llm, query, reranked_results, start_rag)
+            rag_confidence = get_confidence_rag(reranked_results)
+            print("\n--- Validating Query and Response(Guardrail implementation)... ---\n")
+            validation_passed, validation_issues = validate_response(rag_answer)
+            rag_correct = correctness(rag_answer, query)
+            if not validation_passed:
+                st.warning("Response validation issues detected:")
+                for issue in validation_issues:
+                    st.write(f" - {issue}")
+            confidence_score = sum([res.metadata.get('similarity', 0) for res in reranked_results]) / len(reranked_results) if reranked_results else 0
+            df = pd.DataFrame(rag_results)
+            print(df.to_string(index=False))
+        else:
+            fine_tuned_results = []
+            print("\n--- Fine-Tuned Model with Q&A training completed and saved to ./sft_model ---\n")
+            start_ft = time.time()
+            fine_tuned_generator = load_finetuned_model(dataset)
+            print("\n--- Generating Response from Fine-Tuned Model... ---\n")
+            ex_response = expert_model_fine_tune(dataset, model, tokenizer, query)
+            if fine_tuned_generator:
+                answer = generate_response(fine_tuned_generator, query, ex_response, start_ft, max_tokens=1500)
+                st.write(f"Generated Answer:\n{answer}\n")
+                confidence_score = 1.0  # Placeholder confidence
+            else:
+                answer = "Error loading fine-tuned model."
+
+        if answer:
+            st.success(f"Answer: {answer}")
+            st.write(f"Confidence Score: {confidence_score:.2f}")
+            st.write(f"Method Used: {mode}")
+            st.write(f"Response Time: {elapsed_time:.2f} seconds")
